@@ -75,6 +75,24 @@ class AudioCapture:
                 logger.info(f"Found loopback device: {device['name']} (index: {device['index']})")
                 return device['index']
         
+        # Try to find a working device by testing them
+        working_devices = []
+        for device in devices:
+            if self._validate_device(device['index']):
+                working_devices.append(device)
+                logger.info(f"Found working device: {device['name']} (index: {device['index']})")
+        
+        if working_devices:
+            # Prefer Microsoft Sound Mapper or similar system devices
+            for device in working_devices:
+                if 'sound mapper' in device['name'].lower() or 'primary' in device['name'].lower():
+                    logger.info(f"Using preferred system device: {device['name']} (index: {device['index']})")
+                    return device['index']
+            
+            # Use first working device
+            logger.info(f"Using first working device: {working_devices[0]['name']} (index: {working_devices[0]['index']})")
+            return working_devices[0]['index']
+        
         # Fallback to default input device
         try:
             default_input = sd.default.device[0]  # Input device
@@ -82,11 +100,6 @@ class AudioCapture:
             return default_input
         except Exception as e:
             logger.warning(f"Could not get default input device: {e}")
-        
-        # Last resort: try device 0
-        if devices:
-            logger.info(f"Using first available device: {devices[0]['name']} (index: {devices[0]['index']})")
-            return devices[0]['index']
         
         return None
     
@@ -130,21 +143,33 @@ class AudioCapture:
         self.callback = callback
         
         try:
+            # Get device info to check supported sample rates
+            device_info = sd.query_devices(device_index)
+            device_sample_rate = device_info['default_samplerate']
+            
+            # Use device's preferred sample rate if it's close to our target
+            if abs(device_sample_rate - self.sample_rate) < 1000:  # Within 1kHz
+                actual_sample_rate = device_sample_rate
+            else:
+                actual_sample_rate = self.sample_rate
+            
+            logger.info(f"Using sample rate: {actual_sample_rate} (device default: {device_sample_rate})")
+            
             # Create audio stream with platform-specific parameters
             stream_params = {
                 'device': device_index,
                 'channels': 1,
-                'samplerate': self.sample_rate,
+                'samplerate': actual_sample_rate,
                 'blocksize': self.chunk_size,
                 'callback': self._audio_callback,
                 'dtype': np.float32
             }
             
             # Add platform-specific parameters
-            if self.platform == "windows" and self.api:
+            if self.platform == "windows":
                 # For Windows, we need to set the API before creating the stream
                 sd.default.device = device_index
-                sd.default.samplerate = self.sample_rate
+                sd.default.samplerate = actual_sample_rate
                 # Try to use WASAPI by setting the default API
                 try:
                     sd.default.api = self.api
@@ -175,16 +200,26 @@ class AudioCapture:
                 logger.warning(f"Device {device_index} has no input channels")
                 return False
             
-            # Try to create a test stream (very brief)
-            test_stream = sd.InputStream(
-                device=device_index,
-                channels=1,
-                samplerate=16000,
-                blocksize=64,
-                dtype=np.float32
-            )
-            test_stream.close()
-            return True
+            # Try different sample rates for Windows compatibility
+            sample_rates = [16000, 44100, 48000]
+            for sample_rate in sample_rates:
+                try:
+                    # Try to create a test stream with different sample rates
+                    test_stream = sd.InputStream(
+                        device=device_index,
+                        channels=1,
+                        samplerate=sample_rate,
+                        blocksize=64,
+                        dtype=np.float32
+                    )
+                    test_stream.close()
+                    logger.info(f"Device {device_index} validated with sample rate {sample_rate}")
+                    return True
+                except Exception as e:
+                    logger.debug(f"Device {device_index} failed with sample rate {sample_rate}: {e}")
+                    continue
+            
+            return False
             
         except Exception as e:
             logger.warning(f"Device {device_index} validation failed: {e}")
