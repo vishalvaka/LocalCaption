@@ -1,0 +1,5 @@
+# LocalCaption ignore rules
+
+dist/
+.venv/
+models/
