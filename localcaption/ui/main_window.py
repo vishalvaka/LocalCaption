@@ -105,29 +105,41 @@ class AudioWorker(QThread):
         
     def run(self):
         """Main worker loop"""
-        self.is_running = True
-        self.timer.start(1000)  # Update metrics every second
-        
-        def audio_callback(audio_data):
-            if self.is_running:
-                self.audio_ready.emit(audio_data)
-        
-        def asr_callback(text):
-            if self.is_running:
-                self.caption_ready.emit(text)
-        
-        # Start audio capture and ASR
-        self.audio_capture.start_capture(callback=audio_callback)
-        self.asr_engine.start_recognition(callback=asr_callback)
-        
-        # Process audio
-        while self.is_running:
-            self.msleep(10)
-        
-        # Cleanup
-        self.audio_capture.stop_capture()
-        self.asr_engine.stop_recognition()
-        self.timer.stop()
+        try:
+            self.is_running = True
+            self.timer.start(1000)  # Update metrics every second
+            
+            def audio_callback(audio_data):
+                if self.is_running:
+                    self.audio_ready.emit(audio_data)
+            
+            def asr_callback(text):
+                if self.is_running:
+                    self.caption_ready.emit(text)
+            
+            # Start audio capture and ASR
+            if not self.audio_capture.start_capture(callback=audio_callback):
+                logger.error("Failed to start audio capture")
+                return
+                
+            if not self.asr_engine.start_recognition(callback=asr_callback):
+                logger.error("Failed to start ASR recognition")
+                return
+            
+            # Process audio
+            while self.is_running:
+                self.msleep(10)
+            
+        except Exception as e:
+            logger.error(f"Error in AudioWorker: {e}", exc_info=True)
+        finally:
+            # Cleanup
+            try:
+                self.audio_capture.stop_capture()
+                self.asr_engine.stop_recognition()
+                self.timer.stop()
+            except Exception as e:
+                logger.error(f"Error during cleanup: {e}")
     
     def stop(self):
         """Stop the worker"""
@@ -352,32 +364,37 @@ class MainWindow(QMainWindow):
     
     def start_captions(self):
         """Start caption capture"""
-        if not self.audio_capture or not self.asr_engine:
-            QMessageBox.warning(self, "Error", "Audio or ASR not initialized")
-            return
-        
-        # Get selected device
-        device_index = self.audio_device_combo.currentData()
-        if device_index is None:
-            QMessageBox.warning(self, "Error", "Please select an audio device")
-            return
-        
-        # Create worker thread
-        self.audio_worker = AudioWorker(self.audio_capture, self.asr_engine)
-        self.audio_worker.audio_ready.connect(self.process_audio)
-        self.audio_worker.caption_ready.connect(self.update_caption)
-        self.audio_worker.metrics_ready.connect(self.update_metrics)
-        
-        # Start worker
-        self.audio_worker.start()
-        
-        # Update UI
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.statusBar().showMessage("Capturing audio...")
-        
-        # Show caption display
-        self.show_caption_display()
+        try:
+            if not self.audio_capture or not self.asr_engine:
+                QMessageBox.warning(self, "Error", "Audio or ASR not initialized")
+                return
+            
+            # Get selected device
+            device_index = self.audio_device_combo.currentData()
+            if device_index is None:
+                QMessageBox.warning(self, "Error", "Please select an audio device")
+                return
+            
+            # Create worker thread
+            self.audio_worker = AudioWorker(self.audio_capture, self.asr_engine)
+            self.audio_worker.audio_ready.connect(self.process_audio)
+            self.audio_worker.caption_ready.connect(self.update_caption)
+            self.audio_worker.metrics_ready.connect(self.update_metrics)
+            
+            # Start worker
+            self.audio_worker.start()
+            
+            # Update UI
+            self.start_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.statusBar().showMessage("Capturing audio...")
+            
+            # Show caption display
+            self.show_caption_display()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to start captions: {str(e)}")
+            logger.error(f"Error starting captions: {e}", exc_info=True)
     
     def stop_captions(self):
         """Stop caption capture"""
