@@ -44,6 +44,23 @@ Live captions for any audio playing on your computer - fully on-device, no cloud
    python -m localcaption.main
    ```
 
+### Windows Users
+
+**Quick Start:**
+```cmd
+windows\run_on_windows.bat
+```
+
+**Debug Mode (if crashes):**
+```cmd
+windows\debug_windows.bat
+```
+
+**PowerShell Alternative:**
+```powershell
+.\windows\run_on_windows.ps1
+```
+
 
 ### Building Standalone Executable
 
@@ -94,16 +111,25 @@ pyinstaller build.spec
 
 ```
 LocalCaption/
-├── localcaption/
-│   ├── audio/          # Audio capture and processing
-│   ├── asr/            # Speech recognition engine
-│   ├── ui/             # User interface components
-│   ├── utils/          # Utilities and helpers
-│   └── main.py         # Application entry point
-├── models/             # ASR model files
-├── requirements.txt    # Python dependencies
-├── setup_models.py     # Model download script
-└── build.spec          # PyInstaller configuration
+├── localcaption/          # Core application
+│   ├── audio/             # Audio capture and processing
+│   ├── asr/               # Speech recognition engine
+│   ├── ui/                # User interface components
+│   ├── utils/             # Utilities and helpers
+│   └── main.py            # Application entry point
+├── tests/                 # Test scripts
+│   ├── test_app.py        # Main test suite
+│   ├── test_asr.py        # ASR tests
+│   └── test_windows.py    # Windows debug tests
+├── windows/               # Windows launcher scripts
+│   ├── run_on_windows.bat # Standard launcher
+│   ├── run_on_windows.ps1 # PowerShell launcher
+│   └── debug_windows.bat  # Debug launcher
+├── models/                # ASR model files
+├── requirements.txt       # Python dependencies
+├── setup_models.py        # Model download script
+├── build.spec             # PyInstaller configuration
+└── run.py                 # Main launcher script
 ```
 
 ### Key Components
