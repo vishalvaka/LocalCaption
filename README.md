@@ -20,12 +20,6 @@ Live captions for any audio playing on your computer - fully on-device, no cloud
 - Windows 10/11 or macOS 10.15+
 - Audio device with loopback capability (Windows) or BlackHole (macOS)
 
-### WSL Users
-
-If you're running in WSL, you have two options:
-
-1. **Run on Windows (Recommended)**: Use the provided scripts to run LocalCaption directly on Windows
-2. **Set up audio bridge**: Follow the WSL audio setup guide (see `WSL_AUDIO_SETUP.md`)
 
 ### Installation
 
@@ -50,26 +44,6 @@ If you're running in WSL, you have two options:
    python -m localcaption.main
    ```
 
-### WSL Users - Quick Start
-
-**Option 1: Run on Windows (Easiest)**
-```bash
-# Copy to Windows Desktop
-cp -r . /mnt/c/Users/$USER/Desktop/LocalCaption
-
-# Run Windows version
-cd /mnt/c/Users/$USER/Desktop/LocalCaption
-cmd.exe /c "run_on_windows.bat"
-```
-
-**Option 2: Set up audio bridge**
-```bash
-# Follow the detailed guide
-cat WSL_AUDIO_SETUP.md
-
-# Test audio setup
-python test_wsl_audio.py
-```
 
 ### Building Standalone Executable
 
