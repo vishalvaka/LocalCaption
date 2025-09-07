@@ -93,21 +93,18 @@ class AudioWorker(QThread):
     
     audio_ready = pyqtSignal(object)  # Emits audio data
     caption_ready = pyqtSignal(str)   # Emits caption text
-    metrics_ready = pyqtSignal(float, float)  # Emits latency, CPU
+    metrics_request = pyqtSignal()    # Request metrics update
     
     def __init__(self, audio_capture: AudioCapture, asr_engine: ASREngine):
         super().__init__()
         self.audio_capture = audio_capture
         self.asr_engine = asr_engine
         self.is_running = False
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_metrics)
         
     def run(self):
         """Main worker loop"""
         try:
             self.is_running = True
-            self.timer.start(1000)  # Update metrics every second
             
             def audio_callback(audio_data):
                 if self.is_running:
@@ -137,7 +134,6 @@ class AudioWorker(QThread):
             try:
                 self.audio_capture.stop_capture()
                 self.asr_engine.stop_recognition()
-                self.timer.stop()
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
     
@@ -146,15 +142,15 @@ class AudioWorker(QThread):
         self.is_running = False
         self.wait(3000)  # Wait up to 3 seconds
     
-    def update_metrics(self):
-        """Update performance metrics"""
+    def get_metrics(self):
+        """Get current performance metrics"""
         if not self.is_running:
-            return
+            return 0.0, 0.0
             
         import psutil
         latency = self.asr_engine.get_average_latency() * 1000  # Convert to ms
         cpu_percent = psutil.cpu_percent()
-        self.metrics_ready.emit(latency, cpu_percent)
+        return latency, cpu_percent
 
 
 class MainWindow(QMainWindow):
@@ -167,6 +163,10 @@ class MainWindow(QMainWindow):
         self.audio_worker = None
         self.caption_display = None
         self.settings = QSettings("LocalCaption", "Settings")
+        
+        # Metrics timer (must be in main thread)
+        self.metrics_timer = QTimer()
+        self.metrics_timer.timeout.connect(self.update_metrics)
         
         self.setup_ui()
         self.setup_audio()
@@ -379,10 +379,12 @@ class MainWindow(QMainWindow):
             self.audio_worker = AudioWorker(self.audio_capture, self.asr_engine)
             self.audio_worker.audio_ready.connect(self.process_audio)
             self.audio_worker.caption_ready.connect(self.update_caption)
-            self.audio_worker.metrics_ready.connect(self.update_metrics)
             
             # Start worker
             self.audio_worker.start()
+            
+            # Start metrics timer in main thread
+            self.metrics_timer.start(1000)  # Update every second
             
             # Update UI
             self.start_btn.setEnabled(False)
@@ -401,6 +403,9 @@ class MainWindow(QMainWindow):
         if self.audio_worker:
             self.audio_worker.stop()
             self.audio_worker = None
+        
+        # Stop metrics timer
+        self.metrics_timer.stop()
         
         # Update UI
         self.start_btn.setEnabled(True)
@@ -424,19 +429,21 @@ class MainWindow(QMainWindow):
         if self.caption_display:
             self.caption_display.update_caption(text)
     
-    def update_metrics(self, latency: float, cpu_percent: float):
+    def update_metrics(self):
         """Update performance metrics"""
-        self.latency_label.setText(f"Latency: {latency:.1f} ms")
-        self.cpu_label.setText(f"CPU: {cpu_percent:.1f} %")
-        
-        # Update memory usage
-        import psutil
-        memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
-        self.memory_label.setText(f"Memory: {memory_mb:.1f} MB")
-        
-        # Update caption display metrics
-        if self.caption_display:
-            self.caption_display.update_metrics(latency, cpu_percent)
+        if self.audio_worker and self.audio_worker.is_running:
+            latency, cpu_percent = self.audio_worker.get_metrics()
+            self.latency_label.setText(f"Latency: {latency:.1f} ms")
+            self.cpu_label.setText(f"CPU: {cpu_percent:.1f} %")
+            
+            # Update memory usage
+            import psutil
+            memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
+            self.memory_label.setText(f"Memory: {memory_mb:.1f} MB")
+            
+            # Update caption display metrics
+            if self.caption_display:
+                self.caption_display.update_metrics(latency, cpu_percent)
     
     def show_caption_display(self):
         """Show the always-on-top caption display"""

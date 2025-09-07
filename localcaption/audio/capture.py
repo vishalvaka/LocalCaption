@@ -115,17 +115,28 @@ class AudioCapture:
         self.callback = callback
         
         try:
-            # Create audio stream
-            self.stream = sd.InputStream(
-                device=device_index,
-                channels=1,
-                samplerate=self.sample_rate,
-                blocksize=self.chunk_size,
-                callback=self._audio_callback,
-                dtype=np.float32,
-                api=self.api,
-                wasapi_shared=self.wasapi_shared
-            )
+            # Create audio stream with platform-specific parameters
+            stream_params = {
+                'device': device_index,
+                'channels': 1,
+                'samplerate': self.sample_rate,
+                'blocksize': self.chunk_size,
+                'callback': self._audio_callback,
+                'dtype': np.float32
+            }
+            
+            # Add platform-specific parameters
+            if self.platform == "windows" and self.api:
+                # For Windows, we need to set the API before creating the stream
+                sd.default.device = device_index
+                sd.default.samplerate = self.sample_rate
+                # Try to use WASAPI by setting the default API
+                try:
+                    sd.default.api = self.api
+                except:
+                    logger.warning(f"Could not set API to {self.api}, using default")
+            
+            self.stream = sd.InputStream(**stream_params)
             
             self.stream.start()
             self.is_capturing = True
