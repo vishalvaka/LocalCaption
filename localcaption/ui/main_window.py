@@ -353,7 +353,24 @@ class MainWindow(QMainWindow):
             device_name = device['name']
             if device['is_loopback']:
                 device_name += " (Loopback)"
+            device_name += f" (Channels: {device['channels']})"
             self.audio_device_combo.addItem(device_name, device['index'])
+        
+        # Select default device
+        default_device = self.audio_capture.get_default_loopback_device()
+        if default_device is not None:
+            index = self.audio_device_combo.findData(default_device)
+            if index >= 0:
+                self.audio_device_combo.setCurrentIndex(index)
+                logger.info(f"Selected default device: {devices[index]['name']}")
+            else:
+                logger.warning(f"Default device {default_device} not found in combo")
+        else:
+            logger.warning("No default device found")
+        
+        if not devices:
+            QMessageBox.warning(self, "No Audio Devices", 
+                              "No audio input devices found. Please check your audio setup.")
     
     def toggle_captions(self):
         """Toggle caption capture"""

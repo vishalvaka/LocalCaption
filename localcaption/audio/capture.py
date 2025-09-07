@@ -72,13 +72,23 @@ class AudioCapture:
         # Look for loopback devices first
         for device in devices:
             if device['is_loopback']:
+                logger.info(f"Found loopback device: {device['name']} (index: {device['index']})")
                 return device['index']
         
         # Fallback to default input device
         try:
-            return sd.default.device[0]  # Input device
-        except:
-            return None
+            default_input = sd.default.device[0]  # Input device
+            logger.info(f"Using default input device: {default_input}")
+            return default_input
+        except Exception as e:
+            logger.warning(f"Could not get default input device: {e}")
+        
+        # Last resort: try device 0
+        if devices:
+            logger.info(f"Using first available device: {devices[0]['name']} (index: {devices[0]['index']})")
+            return devices[0]['index']
+        
+        return None
     
     def _audio_callback(self, indata, frames, time, status):
         """Callback function for audio stream"""
@@ -111,6 +121,11 @@ class AudioCapture:
             if device_index is None:
                 logger.error("No suitable audio device found")
                 return False
+        
+        # Validate device before attempting to use it
+        if not self._validate_device(device_index):
+            logger.error(f"Device {device_index} is not valid or accessible")
+            return False
         
         self.callback = callback
         
@@ -145,6 +160,34 @@ class AudioCapture:
             
         except Exception as e:
             logger.error(f"Failed to start audio capture: {e}")
+            return False
+    
+    def _validate_device(self, device_index: int) -> bool:
+        """Validate that a device index is valid and accessible"""
+        try:
+            # Check if device exists
+            device_info = sd.query_devices(device_index)
+            if device_info is None:
+                return False
+            
+            # Check if device has input channels
+            if device_info['max_input_channels'] == 0:
+                logger.warning(f"Device {device_index} has no input channels")
+                return False
+            
+            # Try to create a test stream (very brief)
+            test_stream = sd.InputStream(
+                device=device_index,
+                channels=1,
+                samplerate=16000,
+                blocksize=64,
+                dtype=np.float32
+            )
+            test_stream.close()
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Device {device_index} validation failed: {e}")
             return False
     
     def stop_capture(self):
