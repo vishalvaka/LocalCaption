@@ -1,261 +1,100 @@
-# LocalCaption
+# LocalCaption (Desktop MVP)
 
-Live captions for any audio playing on your computer - fully on-device, no cloud required.
+Live on-device captions for any audio playing on your computer.
 
-## Features
+- ASR: sherpa-onnx (streaming Zipformer tiny)
+- Audio capture: sounddevice (WASAPI loopback on Windows; CoreAudio/BlackHole on macOS)
+- UI: PyQt5 always-on-top overlay (draggable, Start/Stop/Save, Close button)
+- Packaging: PyInstaller
 
-- **Real-time captions** with <800ms latency target
-- **Fully on-device** - no internet connection required
-- **Cross-platform** - Windows (WASAPI loopback) and macOS (CoreAudio/BlackHole)
-- **Always-on-top overlay** with configurable opacity
-- **Multiple export formats** - TXT, VTT, SRT
-- **Performance monitoring** - latency and CPU usage tracking
-- **Streaming ASR** using sherpa-onnx with Zipformer/Paraformer models
+## Quickstart (dev)
 
-## Quick Start
-
-### Prerequisites
-
-- Python 3.8 or higher
-- Windows 10/11 or macOS 10.15+
-- Audio device with loopback capability (Windows) or BlackHole (macOS)
-
-
-### Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/yourusername/LocalCaption.git
-   cd LocalCaption
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Download ASR models:**
-   ```bash
-   python setup_models.py
-   ```
-
-4. **Run the application:**
-   ```bash
-   python -m localcaption.main
-   ```
-
-### Windows Users
-
-**Quick Start:**
-```cmd
-windows\run_on_windows.bat
-```
-
-**Debug Mode (if crashes):**
-```cmd
-windows\debug_windows.bat
-```
-
-**PowerShell Alternative:**
-```powershell
-.\windows\run_on_windows.ps1
-```
-
-
-### Building Standalone Executable
+1) Create venv and install deps
 
 ```bash
-# Install PyInstaller
-pip install pyinstaller
+python -m venv .venv
+# Windows PowerShell
+. .venv/Scripts/Activate.ps1
+pip install -r requirements.txt
+```
 
-# Build executable
+2) Download a small streaming model (required)
+
+```bash
+python setup_models.py --en-tiny
+```
+
+This creates a folder under `models/` like:
+- `models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/`
+
+3) Run the app (dev)
+
+```bash
+python run.py
+```
+
+Notes:
+- On Windows: ensure audio is playing through the system "Default" output device. The app captures the default WASAPI output via loopback.
+- On macOS: route audio to a virtual device (e.g., BlackHole) and select it as the system output.
+
+## Build and distribute
+
+You can ship either a one-folder (recommended for portable) or one-file EXE.
+
+### Option A: One-folder (recommended for easy shipping)
+
+1) Ensure models exist before building (so they get bundled):
+```bash
+python setup_models.py --en-tiny
+```
+
+2) Build:
+```bash
 pyinstaller build.spec
-
-# The executable will be in dist/LocalCaption/
 ```
 
-## Usage
+3) Ship the folder:
+- Distribute the entire `dist/LocalCaption/` folder
+- Entry point: `dist/LocalCaption/LocalCaption.exe`
+- Models are bundled under `dist/LocalCaption/models/`
 
-### Basic Usage
+### Option B: One-file (single EXE)
 
-1. **Launch LocalCaption**
-2. **Select audio source** - choose your system audio or specific device
-3. **Click "Start Captions"** - begin real-time transcription
-4. **View captions** - see live captions in the always-on-top overlay
-5. **Export transcript** - save as TXT, VTT, or SRT format
-
-### Audio Sources
-
-#### Windows
-- **System Audio (Loopback)** - Captures all system audio including applications
-- **Microphone** - Captures microphone input
-- **Specific Applications** - Use Windows audio routing tools
-
-#### macOS
-- **BlackHole** - Virtual audio device for system audio capture
-- **Built-in Microphone** - Direct microphone input
-- **Audio Hijack** - For advanced audio routing
-
-### Configuration
-
-#### ASR Models
-- **Zipformer Tiny** (~20MB) - Fast, good accuracy
-- **Paraformer Tiny** (~30MB) - Better accuracy, slightly slower
-
-#### Display Settings
-- **Opacity** - Adjust caption overlay transparency
-- **Always on Top** - Keep captions visible over other windows
-- **Position** - Drag to reposition caption overlay
-
-## Architecture
-
+Build a single EXE. Startup may be slightly slower due to extraction.
+```bash
+pyinstaller --noconsole --onefile --name LocalCaption run.py
 ```
-LocalCaption/
-├── localcaption/          # Core application
-│   ├── audio/             # Audio capture and processing
-│   ├── asr/               # Speech recognition engine
-│   ├── ui/                # User interface components
-│   ├── utils/             # Utilities and helpers
-│   └── main.py            # Application entry point
-├── tests/                 # Test scripts
-│   ├── test_app.py        # Main test suite
-│   ├── test_asr.py        # ASR tests
-│   └── test_windows.py    # Windows debug tests
-├── windows/               # Windows launcher scripts
-│   ├── run_on_windows.bat # Standard launcher
-│   ├── run_on_windows.ps1 # PowerShell launcher
-│   └── debug_windows.bat  # Debug launcher
-├── models/                # ASR model files
-├── requirements.txt       # Python dependencies
-├── setup_models.py        # Model download script
-├── build.spec             # PyInstaller configuration
-└── run.py                 # Main launcher script
-```
+- Output: `dist/LocalCaption.exe`
+- The EXE contains all dependencies and models; at first launch it extracts its contents to a temp dir.
+- If you prefer to keep models next to the EXE instead, create a sibling `models/` directory next to `LocalCaption.exe` before running. The app will look in the bundled data first, then in `./models`.
 
-### Key Components
+### Windows SmartScreen
+- Unsigned binaries may show a SmartScreen warning. Use "More info → Run anyway" or sign the binary for distribution.
 
-- **AudioCapture** - Platform-specific audio capture with WASAPI/CoreAudio
-- **ASREngine** - Streaming speech recognition using sherpa-onnx
-- **MainWindow** - PyQt6-based user interface
-- **CaptionDisplay** - Always-on-top caption overlay
-- **PerformanceMonitor** - Real-time metrics tracking
+## App usage
 
-## Performance
-
-### Latency Targets
-- **Target**: <800ms end-to-end latency
-- **Typical**: 200-500ms on modern hardware
-- **Factors**: Model size, CPU performance, audio buffer size
-
-### System Requirements
-- **CPU**: 2+ cores recommended
-- **RAM**: 4GB+ available memory
-- **Storage**: 100MB for models and application
-- **Audio**: Loopback-capable audio device
-
-### Optimization Tips
-1. **Use smaller models** for lower latency
-2. **Close unnecessary applications** to free CPU
-3. **Use SSD storage** for faster model loading
-4. **Adjust audio buffer size** in settings
+- Start: begins capturing from the default output device and streaming ASR.
+- Stop: stops capture.
+- Save: writes the transcript to `.txt` and a basic `.vtt`.
+- The overlay is always-on-top, frameless, draggable, and has a close button.
+- Metrics: bottom-left shows current ASR latency and CPU%.
 
 ## Troubleshooting
 
-### Common Issues
+- No captions appear:
+  - Ensure audio is actually playing through the Windows default output device (check Sound settings).
+  - Try raising the volume and make sure no exclusive-mode apps are holding the device.
+  - For macOS, route the system audio to BlackHole and set it as default output.
+- "Model missing" dialog:
+  - Run: `python setup_models.py --en-tiny`
+  - Confirm a folder exists under `models/` with `tokens.txt` and `*.onnx` files.
+  - If using one-folder build, rebuild after models are downloaded so they get included.
+- First launch is slow:
+  - One-file EXE extracts itself on first run; subsequent launches are faster.
+- WASAPI loopback device issues:
+  - Ensure you are on Windows 10/11 and the device you expect is set as Default.
 
-#### No Audio Devices Found
-- **Windows**: Ensure Windows Audio Service is running
-- **macOS**: Install BlackHole for system audio capture
-- **Linux**: Check ALSA/PulseAudio configuration
+## Dev notes
 
-#### High Latency
-- Try smaller ASR model (Zipformer Tiny)
-- Close other CPU-intensive applications
-- Check audio buffer settings
-
-#### Poor Recognition Accuracy
-- Ensure clear audio input
-- Try different ASR model
-- Check microphone/audio source quality
-
-#### Application Crashes
-- Check Python version (3.8+ required)
-- Verify all dependencies installed
-- Check system audio drivers
-
-### Debug Mode
-
-Run with verbose logging:
-```bash
-python -m localcaption.main --verbose
-```
-
-Check dependencies:
-```bash
-python -m localcaption.main --check-deps
-```
-
-## Development
-
-### Project Structure
-- **Modular design** - Easy to extend and modify
-- **Platform abstraction** - Clean separation of platform-specific code
-- **Async processing** - Non-blocking audio and ASR processing
-- **Configurable** - Easy to adjust settings and parameters
-
-### Adding New Features
-1. **Audio Sources** - Extend `AudioCapture` class
-2. **ASR Models** - Add to `ModelManager`
-3. **Export Formats** - Extend `TranscriptExporter`
-4. **UI Components** - Add to PyQt6 interface
-
-### Building for Distribution
-```bash
-# Create distribution package
-python setup.py sdist bdist_wheel
-
-# Build standalone executable
-pyinstaller build.spec
-
-# Test on target platform
-./dist/LocalCaption/LocalCaption.exe
-```
-
-## Roadmap
-
-### Phase 1 (Current)
-- [x] Desktop MVP with PyQt6
-- [x] Windows WASAPI loopback support
-- [x] Streaming ASR with sherpa-onnx
-- [x] Basic export functionality
-
-### Phase 2 (Next)
-- [ ] macOS CoreAudio/BlackHole support
-- [ ] Advanced audio routing options
-- [ ] Custom model support
-- [ ] Plugin system
-
-### Phase 3 (Future)
-- [ ] Android app using shared components
-- [ ] Cloud sync for transcripts
-- [ ] Advanced editing features
-- [ ] Multi-language support
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Acknowledgments
-
-- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) - Streaming ASR engine
-- [sounddevice](https://github.com/spatialaudio/python-sounddevice) - Audio capture
-- [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) - GUI framework
-- [BlackHole](https://github.com/ExistentialAudio/BlackHole) - macOS audio routing
+- The app auto-detects the model file names (tokens/encoder*/decoder*/joiner*).
+- When frozen (PyInstaller), the app resolves `models/` inside the bundle; when running from source, it uses the workspace `models/`.

@@ -1,254 +1,160 @@
-"""
-ASR Engine using sherpa-onnx for real-time speech recognition
-"""
+from __future__ import annotations
 
 import os
 import time
-import threading
-import queue
-import logging
-from typing import Optional, Callable, Dict, Any, List
+from dataclasses import dataclass
+from typing import Optional, Any
+
 import numpy as np
-import sherpa_onnx
 
-logger = logging.getLogger(__name__)
+try:
+    import sherpa_onnx
+except Exception:  # pragma: no cover - optional dependency during early dev
+    sherpa_onnx = None  # type: ignore
 
 
-class ASREngine:
-    """ASR Engine using sherpa-onnx with streaming support"""
-    
-    def __init__(self, model_config: Dict[str, Any]):
-        self.model_config = model_config
-        self.recognizer = None
-        self.stream = None
-        self.is_initialized = False
-        self.is_running = False
-        self.audio_queue = queue.Queue(maxsize=50)
-        self.result_callback = None
-        self.thread = None
-        self.latency_history = []
-        
-        # Performance metrics
-        self.total_audio_duration = 0.0
-        self.total_processing_time = 0.0
-        self.last_result_time = 0.0
-        
-    def initialize(self) -> bool:
-        """Initialize the ASR engine"""
-        try:
-            # Create recognizer with direct model files
-            model_dir = os.path.dirname(self.model_config['config_file'])
-            
-            # Check if all required files exist
-            required_files = {
-                'encoder': os.path.join(model_dir, "encoder-epoch-99-avg-1.onnx"),
-                'decoder': os.path.join(model_dir, "decoder-epoch-99-avg-1.onnx"),
-                'joiner': os.path.join(model_dir, "joiner-epoch-99-avg-1.onnx"),
-                'tokens': os.path.join(model_dir, "tokens.txt"),
-                'bpe_model': os.path.join(model_dir, "bpe.model"),
-                'bpe_vocab': os.path.join(model_dir, "bpe.vocab")
-            }
-            
-            for name, path in required_files.items():
-                if not os.path.exists(path):
-                    logger.error(f"Required file not found: {path}")
-                    return False
-            
-            # Create recognizer using from_transducer method
-            self.recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
-                tokens=required_files['tokens'],
-                encoder=required_files['encoder'],
-                decoder=required_files['decoder'],
-                joiner=required_files['joiner'],
-                bpe_vocab=required_files['bpe_vocab'],
-                sample_rate=16000,
-                feature_dim=80,
-                num_threads=1,
-                debug=False,
-                provider='cpu'
+@dataclass
+class RecognitionResult:
+    text: str
+    latency_ms: float
+    is_final: bool
+
+
+class StreamingASREngine:
+    """A thin wrapper around sherpa-onnx OnlineRecognizer for streaming ASR."""
+
+    def __init__(
+        self,
+        model_dir: str,
+        sample_rate: int = 16000,
+        feature_dim: int = 80,
+        use_cpu: bool = True,
+    ) -> None:
+        if sherpa_onnx is None:
+            raise RuntimeError("sherpa-onnx is not installed")
+
+        self._sample_rate = sample_rate
+        self._last_partial: str = ""
+
+        model_dir = os.path.abspath(model_dir)
+
+        def _find(glob_pat: str) -> Optional[str]:
+            import glob
+
+            matches = glob.glob(os.path.join(model_dir, "**", glob_pat), recursive=True)
+            return matches[0] if matches else None
+
+        tokens = _find("tokens.txt")
+        encoder = _find("encoder*.onnx") or _find("*encoder*.onnx")
+        decoder = _find("decoder*.onnx") or _find("*decoder*.onnx")
+        joiner = _find("joiner*.onnx") or _find("*joiner*.onnx")
+
+        if not all([tokens, encoder, decoder, joiner]):
+            raise FileNotFoundError(
+                f"Model files not found under: {model_dir}. "
+                f"Expected tokens/encoder*/decoder*/joiner* ONNX files."
             )
-            
-            # Create stream
-            self.stream = self.recognizer.create_stream()
-            self.is_initialized = True
-            logger.info("ASR engine initialized successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize ASR engine: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def start_recognition(self, callback: Optional[Callable] = None):
-        """Start real-time recognition"""
-        if not self.is_initialized:
-            logger.error("ASR engine not initialized")
-            return False
-        
-        if self.is_running:
-            logger.warning("ASR engine is already running")
-            return False
-        
-        self.result_callback = callback
-        self.is_running = True
-        
-        # Start processing thread
-        self.thread = threading.Thread(target=self._process_audio, daemon=True)
-        self.thread.start()
-        
-        logger.info("ASR recognition started")
-        return True
-    
-    def stop_recognition(self):
-        """Stop recognition"""
-        if not self.is_running:
-            return
-        
-        self.is_running = False
-        
-        # Wait for thread to finish
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2.0)
-        
-        # Finalize stream
-        if self.stream:
-            self.recognizer.decode_stream(self.stream)
-            result = self.recognizer.get_result(self.stream)
-            if result and self.result_callback:
-                self.result_callback(result.text.strip())
-        
-        logger.info("ASR recognition stopped")
-    
-    def add_audio(self, audio_data: np.ndarray):
-        """Add audio data for processing"""
-        if not self.is_running or not self.stream:
-            return
-        
-        try:
-            # Convert to int16 if needed
-            if audio_data.dtype != np.int16:
-                audio_data = (audio_data * 32767).astype(np.int16)
-            
-            # Add to stream
-            self.stream.accept_waveform(
-                sample_rate=self.model_config.get('sample_rate', 16000),
-                waveform=audio_data.tolist()
+
+        recognizer: Any = None
+
+        # Prefer factory if available (v1.12.x compatible) — positional args
+        from_transducer = getattr(getattr(sherpa_onnx, "OnlineRecognizer", object), "from_transducer", None)
+        if callable(from_transducer):
+            recognizer = from_transducer(
+                tokens,  # type: ignore[arg-type]
+                encoder,  # type: ignore[arg-type]
+                decoder,  # type: ignore[arg-type]
+                joiner,  # type: ignore[arg-type]
+                num_threads=2,
+                sample_rate=sample_rate,
+                feature_dim=feature_dim,
+                decoding_method="greedy_search",
+                provider="cpu" if use_cpu else "cpu",
             )
-            
-        except Exception as e:
-            logger.error(f"Error adding audio to ASR: {e}")
-    
-    def _process_audio(self):
-        """Process audio in background thread"""
-        while self.is_running:
+
+        # Try config-based API (newer versions)
+        if recognizer is None:
             try:
-                # Decode stream
-                self.recognizer.decode_stream(self.stream)
-                
-                # Get result
-                result = self.recognizer.get_result(self.stream)
-                
-                if result and result.text.strip():
-                    current_time = time.time()
-                    
-                    # Calculate latency
-                    if self.last_result_time > 0:
-                        latency = current_time - self.last_result_time
-                        self.latency_history.append(latency)
-                        
-                        # Keep only last 100 measurements
-                        if len(self.latency_history) > 100:
-                            self.latency_history.pop(0)
-                    
-                    self.last_result_time = current_time
-                    
-                    # Call callback
-                    if self.result_callback:
-                        self.result_callback(result.text.strip())
-                
-                # Small delay to prevent busy waiting
-                time.sleep(0.01)
-                
-            except Exception as e:
-                logger.error(f"Error in ASR processing: {e}")
-                time.sleep(0.1)
-    
-    def get_average_latency(self) -> float:
-        """Get average latency in seconds"""
-        if not self.latency_history:
-            return 0.0
-        return sum(self.latency_history) / len(self.latency_history)
-    
-    def get_processing_stats(self) -> Dict[str, float]:
-        """Get processing statistics"""
-        avg_latency = self.get_average_latency()
-        
-        return {
-            'average_latency': avg_latency,
-            'total_audio_duration': self.total_audio_duration,
-            'total_processing_time': self.total_processing_time,
-            'realtime_factor': self.total_audio_duration / max(self.total_processing_time, 0.001)
-        }
+                OnlineRecognizerConfig = getattr(sherpa_onnx, "OnlineRecognizerConfig", None)
+                FeatureConfig = getattr(sherpa_onnx, "FeatureConfig", None)
+                OnlineTransducerModelConfig = getattr(sherpa_onnx, "OnlineTransducerModelConfig", None)
+                if OnlineRecognizerConfig and FeatureConfig and OnlineTransducerModelConfig:
+                    feat_config = FeatureConfig(sample_rate=sample_rate, feature_dim=feature_dim)  # type: ignore[misc]
+                    model_config = OnlineTransducerModelConfig(  # type: ignore[misc]
+                        encoder=encoder,
+                        decoder=decoder,
+                        joiner=joiner,
+                        tokens=tokens,
+                        num_threads=2,
+                        provider="cpu" if use_cpu else "",
+                    )
+                    config = OnlineRecognizerConfig(  # type: ignore[misc]
+                        feat_config=feat_config,
+                        model_config=model_config,
+                        decoding_method="greedy_search",
+                    )
+                    recognizer = sherpa_onnx.OnlineRecognizer(config)  # type: ignore[call-arg]
+            except Exception:
+                recognizer = None
 
+        if recognizer is None:
+            raise RuntimeError("Unable to construct sherpa-onnx OnlineRecognizer for this version.")
 
-class ModelManager:
-    """Manages ASR model downloads and configuration"""
-    
-    MODELS = {
-        'zipformer_bilingual': {
-            'name': 'Zipformer Tiny (Bilingual EN-ZH)',
-            'size': '~20MB',
-            'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2',
-            'config_file': 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/online_config.yaml'
-        }
-    }
-    
-    @classmethod
-    def get_model_config(cls, model_name: str, models_dir: str = "models") -> Optional[Dict[str, Any]]:
-        """Get model configuration"""
-        if model_name not in cls.MODELS:
-            logger.error(f"Unknown model: {model_name}")
-            return None
-        
-        model_info = cls.MODELS[model_name]
-        config_path = os.path.join(models_dir, model_info['config_file'])
-        
-        if not os.path.exists(config_path):
-            logger.warning(f"Model config not found: {config_path}")
-            return None
-        
-        return {
-            'config_file': config_path,
-            'sample_rate': 16000,
-            'model_name': model_name,
-            'model_info': model_info
-        }
-    
-    @classmethod
-    def list_available_models(cls, models_dir: str = "models") -> List[str]:
-        """List available models"""
-        available = []
-        for model_name, model_info in cls.MODELS.items():
-            config_path = os.path.join(models_dir, model_info['config_file'])
-            if os.path.exists(config_path):
-                available.append(model_name)
-        return available
-    
-    @classmethod
-    def download_model(cls, model_name: str, models_dir: str = "models") -> bool:
-        """Download model (placeholder - would implement actual download)"""
-        logger.info(f"Model download not implemented yet. Please download {model_name} manually.")
-        return False
+        self._recognizer: Any = recognizer
+        self._stream: Any = self._recognizer.create_stream()
 
+    def accept_pcm(self, pcm_f32: np.ndarray, sample_rate: int, timestamp: float) -> Optional[RecognitionResult]:
+        """Accept a chunk of PCM float32 data and return partial/final result if available."""
+        if pcm_f32.ndim == 2:
+            pcm_f32 = np.mean(pcm_f32, axis=1)
+        if sample_rate != self._sample_rate:
+            # resample using simple linear method for MVP
+            pcm_f32 = self._resample_linear(pcm_f32, sample_rate, self._sample_rate)
 
-def create_default_config() -> Dict[str, Any]:
-    """Create default ASR configuration"""
-    return {
-        'model_name': 'zipformer_bilingual',
-        'sample_rate': 16000,
-        'chunk_size': 1024,
-        'vad_threshold': 0.01,
-        'min_silence_duration': 0.5,
-        'max_sentence_length': 100
-    }
+        start = time.perf_counter()
+        self._stream.accept_waveform(self._sample_rate, pcm_f32.tolist())
+
+        result: Optional[RecognitionResult] = None
+        while self._recognizer.is_ready(self._stream):
+            self._recognizer.decode_stream(self._stream)
+            r = self._recognizer.get_result(self._stream)
+            partial = self._extract_text(r)
+            partial = partial.strip()
+            if partial and partial != self._last_partial:
+                self._last_partial = partial
+                result = RecognitionResult(text=partial, latency_ms=(time.perf_counter() - start) * 1000, is_final=False)
+
+        if self._recognizer.is_endpoint(self._stream):
+            r = self._recognizer.get_result(self._stream)
+            self._recognizer.reset(self._stream)
+            final_text = self._extract_text(r).strip()
+            if final_text:
+                result = RecognitionResult(text=final_text, latency_ms=(time.perf_counter() - start) * 1000, is_final=True)
+                self._last_partial = ""
+
+        return result
+
+    @staticmethod
+    def _extract_text(result_obj) -> str:  # type: ignore[no-untyped-def]
+        if isinstance(result_obj, str):
+            return result_obj
+        text_attr = getattr(result_obj, "text", None)
+        if isinstance(text_attr, str):
+            return text_attr
+        if isinstance(result_obj, dict):
+            v = result_obj.get("text")
+            if isinstance(v, str):
+                return v
+        return str(result_obj)
+
+    @staticmethod
+    def _resample_linear(pcm: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+        if src_sr == dst_sr:
+            return pcm
+        duration = pcm.shape[0] / float(src_sr)
+        dst_len = int(duration * dst_sr)
+        if dst_len <= 1:
+            return np.zeros(0, dtype=np.float32)
+        x_old = np.linspace(0.0, duration, num=pcm.shape[0], endpoint=False)
+        x_new = np.linspace(0.0, duration, num=dst_len, endpoint=False)
+        return np.interp(x_new, x_old, pcm).astype(np.float32)

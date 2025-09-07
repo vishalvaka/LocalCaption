@@ -1,297 +1,136 @@
-"""
-Audio capture module for LocalCaption
-Supports WASAPI loopback on Windows and CoreAudio on macOS
-"""
-
-import sounddevice as sd
-import numpy as np
 import threading
 import queue
 import time
-import platform
-from typing import Optional, Callable, List, Dict, Any
-import logging
+from typing import Callable, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+import numpy as np
+import sounddevice as sd
 
 
 class AudioCapture:
-    """Audio capture class with platform-specific optimizations"""
-    
-    def __init__(self, sample_rate: int = 16000, chunk_size: int = 1024):
-        self.sample_rate = sample_rate
-        self.chunk_size = chunk_size
-        self.is_capturing = False
-        self.audio_queue = queue.Queue(maxsize=100)
-        self.stream = None
-        self.thread = None
-        self.callback = None
-        self.platform = platform.system().lower()
-        
-        # Platform-specific settings
-        self._setup_platform_settings()
-    
-    def _setup_platform_settings(self):
-        """Setup platform-specific audio settings"""
-        if self.platform == "windows":
-            # Use WASAPI for better loopback support
-            self.api = "wasapi"
-            self.wasapi_shared = True
-        elif self.platform == "darwin":
-            # Use CoreAudio on macOS
-            self.api = "coreaudio"
-            self.wasapi_shared = False
-        else:
-            # Fallback to default
-            self.api = None
-            self.wasapi_shared = False
-    
-    def get_audio_devices(self) -> List[Dict[str, Any]]:
-        """Get list of available audio devices"""
-        devices = []
-        try:
-            device_list = sd.query_devices()
-            for i, device in enumerate(device_list):
-                if device['max_input_channels'] > 0:
-                    devices.append({
-                        'index': i,
-                        'name': device['name'],
-                        'channels': device['max_input_channels'],
-                        'sample_rate': device['default_samplerate'],
-                        'is_loopback': 'loopback' in device['name'].lower() or 'stereo mix' in device['name'].lower()
-                    })
-        except Exception as e:
-            logger.error(f"Error querying audio devices: {e}")
-        
-        return devices
-    
-    def get_default_loopback_device(self) -> Optional[int]:
-        """Get the default loopback device for system audio capture"""
-        devices = self.get_audio_devices()
-        
-        # Look for loopback devices first
-        for device in devices:
-            if device['is_loopback']:
-                logger.info(f"Found loopback device: {device['name']} (index: {device['index']})")
-                return device['index']
-        
-        # Try to find a working device by testing them
-        working_devices = []
-        for device in devices:
-            if self._validate_device(device['index']):
-                working_devices.append(device)
-                logger.info(f"Found working device: {device['name']} (index: {device['index']})")
-        
-        if working_devices:
-            # Prefer Microsoft Sound Mapper or similar system devices
-            for device in working_devices:
-                if 'sound mapper' in device['name'].lower() or 'primary' in device['name'].lower():
-                    logger.info(f"Using preferred system device: {device['name']} (index: {device['index']})")
-                    return device['index']
-            
-            # Use first working device
-            logger.info(f"Using first working device: {working_devices[0]['name']} (index: {working_devices[0]['index']})")
-            return working_devices[0]['index']
-        
-        # Fallback to default input device
-        try:
-            default_input = sd.default.device[0]  # Input device
-            logger.info(f"Using default input device: {default_input}")
-            return default_input
-        except Exception as e:
-            logger.warning(f"Could not get default input device: {e}")
-        
-        return None
-    
-    def _audio_callback(self, indata, frames, time, status):
-        """Callback function for audio stream"""
+    """Capture system audio and forward PCM frames to a consumer callback.
+
+    On Windows, uses WASAPI loopback to capture system output.
+    On macOS, capture from a selected input device (e.g., BlackHole).
+    """
+
+    def __init__(
+        self,
+        target_sample_rate: int = 16000,
+        channels: int = 1,
+        block_duration_ms: int = 50,
+    ) -> None:
+        self.target_sample_rate = target_sample_rate
+        self.channels = channels
+        self.block_duration_ms = block_duration_ms
+
+        self._stream: Optional[sd.InputStream] = None
+        self._device_index: Optional[int] = None
+        self._queue: "queue.Queue[Tuple[np.ndarray, int, float]]" = queue.Queue()
+        self._consumer: Optional[Callable[[np.ndarray, int, float], None]] = None
+        self._consumer_thread: Optional[threading.Thread] = None
+        self._running = threading.Event()
+
+    def list_devices(self) -> list:
+        """Return sounddevice devices list."""
+        return sd.query_devices()
+
+    def set_device(self, device_index: Optional[int]) -> None:
+        self._device_index = device_index
+
+    def set_consumer(self, consumer: Callable[[np.ndarray, int, float], None]) -> None:
+        self._consumer = consumer
+
+    def _on_audio(self, indata: np.ndarray, frames: int, time_info, status) -> None:  # type: ignore[override]
         if status:
-            logger.warning(f"Audio callback status: {status}")
-        
-        if self.callback:
-            # Convert to mono if stereo
-            if indata.shape[1] > 1:
-                audio_data = np.mean(indata, axis=1)
-            else:
-                audio_data = indata[:, 0]
-            
-            # Convert to float32
-            audio_data = audio_data.astype(np.float32)
-            
-            try:
-                self.callback(audio_data)
-            except Exception as e:
-                logger.error(f"Error in audio callback: {e}")
-    
-    def start_capture(self, device_index: Optional[int] = None, callback: Optional[Callable] = None):
-        """Start audio capture"""
-        if self.is_capturing:
-            logger.warning("Audio capture is already running")
-            return False
-        
-        if device_index is None:
-            device_index = self.get_default_loopback_device()
-            if device_index is None:
-                logger.error("No suitable audio device found")
-                return False
-        
-        # Validate device before attempting to use it
-        if not self._validate_device(device_index):
-            logger.error(f"Device {device_index} is not valid or accessible")
-            return False
-        
-        self.callback = callback
-        
-        try:
-            # Get device info to check supported sample rates
-            device_info = sd.query_devices(device_index)
-            device_sample_rate = device_info['default_samplerate']
-            
-            # Use device's preferred sample rate if it's close to our target
-            if abs(device_sample_rate - self.sample_rate) < 1000:  # Within 1kHz
-                actual_sample_rate = device_sample_rate
-            else:
-                actual_sample_rate = self.sample_rate
-            
-            logger.info(f"Using sample rate: {actual_sample_rate} (device default: {device_sample_rate})")
-            
-            # Create audio stream with platform-specific parameters
-            stream_params = {
-                'device': device_index,
-                'channels': 1,
-                'samplerate': actual_sample_rate,
-                'blocksize': self.chunk_size,
-                'callback': self._audio_callback,
-                'dtype': np.float32
-            }
-            
-            # Add platform-specific parameters
-            if self.platform == "windows":
-                # For Windows, we need to set the API before creating the stream
-                sd.default.device = device_index
-                sd.default.samplerate = actual_sample_rate
-                # Try to use WASAPI by setting the default API
-                try:
-                    sd.default.api = self.api
-                except:
-                    logger.warning(f"Could not set API to {self.api}, using default")
-            
-            self.stream = sd.InputStream(**stream_params)
-            
-            self.stream.start()
-            self.is_capturing = True
-            logger.info(f"Started audio capture on device {device_index}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to start audio capture: {e}")
-            return False
-    
-    def _validate_device(self, device_index: int) -> bool:
-        """Validate that a device index is valid and accessible"""
-        try:
-            # Check if device exists
-            device_info = sd.query_devices(device_index)
-            if device_info is None:
-                return False
-            
-            # Check if device has input channels
-            if device_info['max_input_channels'] == 0:
-                logger.warning(f"Device {device_index} has no input channels")
-                return False
-            
-            # Try different sample rates for Windows compatibility
-            sample_rates = [16000, 44100, 48000]
-            for sample_rate in sample_rates:
-                try:
-                    # Try to create a test stream with different sample rates
-                    test_stream = sd.InputStream(
-                        device=device_index,
-                        channels=1,
-                        samplerate=sample_rate,
-                        blocksize=64,
-                        dtype=np.float32
-                    )
-                    test_stream.close()
-                    logger.info(f"Device {device_index} validated with sample rate {sample_rate}")
-                    return True
-                except Exception as e:
-                    logger.debug(f"Device {device_index} failed with sample rate {sample_rate}: {e}")
-                    continue
-            
-            return False
-            
-        except Exception as e:
-            logger.warning(f"Device {device_index} validation failed: {e}")
-            return False
-    
-    def stop_capture(self):
-        """Stop audio capture"""
-        if not self.is_capturing:
+            # Drop status messages silently for MVP
+            pass
+        if indata.size == 0:
             return
-        
-        try:
-            if self.stream:
-                self.stream.stop()
-                self.stream.close()
-                self.stream = None
-            
-            self.is_capturing = False
-            self.callback = None
-            logger.info("Stopped audio capture")
-            
-        except Exception as e:
-            logger.error(f"Error stopping audio capture: {e}")
-    
-    def is_available(self) -> bool:
-        """Check if audio capture is available on this platform"""
-        try:
-            devices = self.get_audio_devices()
-            return len(devices) > 0
-        except:
-            return False
-    
-    def get_latency(self) -> float:
-        """Get current audio stream latency in seconds"""
-        if self.stream and self.is_capturing:
+        timestamp = time.time()
+        # Copy to avoid referencing the ring buffer after callback returns
+        pcm = np.copy(indata)
+        self._queue.put((pcm, int(self._stream.samplerate) if self._stream else 0, timestamp))
+
+    def _consumer_loop(self) -> None:
+        assert self._consumer is not None
+        while self._running.is_set():
             try:
-                return self.stream.latency[0]  # Input latency
-            except:
-                return 0.0
-        return 0.0
+                pcm, sample_rate, timestamp = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self._consumer(pcm, sample_rate, timestamp)
+            except Exception:
+                # Avoid crashing the thread due to consumer issues
+                continue
 
+    def start(self) -> None:
+        if self._stream is not None:
+            return
 
-class AudioProcessor:
-    """Audio processing utilities"""
-    
-    @staticmethod
-    def normalize_audio(audio: np.ndarray) -> np.ndarray:
-        """Normalize audio to [-1, 1] range"""
-        if len(audio) == 0:
-            return audio
-        
-        max_val = np.max(np.abs(audio))
-        if max_val > 0:
-            return audio / max_val
-        return audio
-    
-    @staticmethod
-    def apply_vad(audio: np.ndarray, threshold: float = 0.01) -> bool:
-        """Simple Voice Activity Detection"""
-        if len(audio) == 0:
-            return False
-        
-        rms = np.sqrt(np.mean(audio ** 2))
-        return rms > threshold
-    
-    @staticmethod
-    def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-        """Resample audio to target sample rate"""
-        if orig_sr == target_sr:
-            return audio
-        
-        # Simple linear interpolation resampling
-        ratio = target_sr / orig_sr
-        new_length = int(len(audio) * ratio)
-        indices = np.linspace(0, len(audio) - 1, new_length)
-        return np.interp(indices, np.arange(len(audio)), audio)
+        self._running.set()
+
+        device = self._device_index
+        extra = None
+        samplerate = None
+        channels = 2
+        blocksize = None
+
+        try:
+            hostapis = sd.query_hostapis()
+            wasapi_index = next((i for i, ha in enumerate(hostapis) if 'wasapi' in ha['name'].lower()), None)
+            if wasapi_index is not None:
+                extra = sd.WasapiSettings(loopback=True)
+                if device is None:
+                    device = hostapis[wasapi_index]['default_output']
+                if device is not None and device >= 0:
+                    dinfo = sd.query_devices(device)
+                    samplerate = int(dinfo.get('default_samplerate') or 48000)
+                    out_ch = int(dinfo.get('max_output_channels') or 2)
+                    channels = max(1, min(2, out_ch))
+                    blocksize = max(1, int(samplerate * self.block_duration_ms / 1000))
+        except Exception:
+            extra = None
+
+        try:
+            self._stream = sd.InputStream(
+                device=device,
+                channels=channels,
+                dtype='float32',
+                samplerate=samplerate,
+                callback=self._on_audio,
+                blocksize=blocksize or 0,
+                latency='low',
+                extra_settings=extra,
+            )
+        except Exception:
+            # Fallback: let backend choose everything (e.g., macOS/other APIs)
+            self._stream = sd.InputStream(
+                device=device,
+                channels=max(1, self.channels),
+                dtype='float32',
+                callback=self._on_audio,
+                blocksize=0,
+                latency='low',
+            )
+
+        self._stream.start()
+
+        if self._consumer is not None:
+            self._consumer_thread = threading.Thread(target=self._consumer_loop, daemon=True)
+            self._consumer_thread.start()
+
+    def stop(self) -> None:
+        self._running.clear()
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            finally:
+                self._stream = None
+        if self._consumer_thread is not None:
+            self._consumer_thread.join(timeout=1.0)
+            self._consumer_thread = None
+        with self._queue.mutex:
+            self._queue.queue.clear()
