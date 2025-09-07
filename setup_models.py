@@ -14,21 +14,13 @@ logger = logging.getLogger(__name__)
 
 # Model URLs and configurations
 MODELS = {
-    'zipformer_tiny': {
+    'zipformer_bilingual': {
         'name': 'Zipformer Tiny (Bilingual EN-ZH)',
         'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2',
         'filename': 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2',
         'extract_dir': 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20',
-        'config_file': 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/streaming-zipformer-bilingual-zh-en-2023-02-20/online_config.yaml',
+        'config_file': 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/online_config.yaml',
         'size_mb': 20
-    },
-    'paraformer_tiny': {
-        'name': 'Paraformer Tiny (Bilingual EN-ZH)',
-        'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en-2023-02-20.tar.bz2',
-        'filename': 'sherpa-onnx-streaming-paraformer-bilingual-zh-en-2023-02-20.tar.bz2',
-        'extract_dir': 'sherpa-onnx-streaming-paraformer-bilingual-zh-en-2023-02-20',
-        'config_file': 'sherpa-onnx-streaming-paraformer-bilingual-zh-en-2023-02-20/streaming-paraformer-bilingual-zh-en-2023-02-20/online_config.yaml',
-        'size_mb': 30
     }
 }
 

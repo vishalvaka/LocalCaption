@@ -215,7 +215,7 @@ class MainWindow(QMainWindow):
         model_layout = QVBoxLayout()
         
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["zipformer_tiny", "paraformer_tiny"])
+        self.model_combo.addItems(["zipformer_bilingual"])
         
         model_layout.addWidget(QLabel("Model:"))
         model_layout.addWidget(self.model_combo)

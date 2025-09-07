@@ -36,9 +36,36 @@ class ASREngine:
     def initialize(self) -> bool:
         """Initialize the ASR engine"""
         try:
-            # Create recognizer with streaming support
-            self.recognizer = sherpa_onnx.OnlineRecognizer.from_file(
-                self.model_config['config_file']
+            # Create recognizer with direct model files
+            model_dir = os.path.dirname(self.model_config['config_file'])
+            
+            # Check if all required files exist
+            required_files = {
+                'encoder': os.path.join(model_dir, "encoder-epoch-99-avg-1.onnx"),
+                'decoder': os.path.join(model_dir, "decoder-epoch-99-avg-1.onnx"),
+                'joiner': os.path.join(model_dir, "joiner-epoch-99-avg-1.onnx"),
+                'tokens': os.path.join(model_dir, "tokens.txt"),
+                'bpe_model': os.path.join(model_dir, "bpe.model"),
+                'bpe_vocab': os.path.join(model_dir, "bpe.vocab")
+            }
+            
+            for name, path in required_files.items():
+                if not os.path.exists(path):
+                    logger.error(f"Required file not found: {path}")
+                    return False
+            
+            # Create recognizer using from_transducer method
+            self.recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+                tokens=required_files['tokens'],
+                encoder=required_files['encoder'],
+                decoder=required_files['decoder'],
+                joiner=required_files['joiner'],
+                bpe_vocab=required_files['bpe_vocab'],
+                sample_rate=16000,
+                feature_dim=80,
+                num_threads=1,
+                debug=False,
+                provider='cpu'
             )
             
             # Create stream
@@ -49,6 +76,8 @@ class ASREngine:
             
         except Exception as e:
             logger.error(f"Failed to initialize ASR engine: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def start_recognition(self, callback: Optional[Callable] = None):
@@ -167,17 +196,11 @@ class ModelManager:
     """Manages ASR model downloads and configuration"""
     
     MODELS = {
-        'zipformer_tiny': {
-            'name': 'Zipformer Tiny',
+        'zipformer_bilingual': {
+            'name': 'Zipformer Tiny (Bilingual EN-ZH)',
             'size': '~20MB',
             'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2',
-            'config_file': 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/streaming-zipformer-bilingual-zh-en-2023-02-20/online_config.yaml'
-        },
-        'paraformer_tiny': {
-            'name': 'Paraformer Tiny',
-            'size': '~30MB',
-            'url': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en-2023-02-20.tar.bz2',
-            'config_file': 'sherpa-onnx-streaming-paraformer-bilingual-zh-en-2023-02-20/streaming-paraformer-bilingual-zh-en-2023-02-20/online_config.yaml'
+            'config_file': 'sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/online_config.yaml'
         }
     }
     
@@ -222,7 +245,7 @@ class ModelManager:
 def create_default_config() -> Dict[str, Any]:
     """Create default ASR configuration"""
     return {
-        'model_name': 'zipformer_tiny',
+        'model_name': 'zipformer_bilingual',
         'sample_rate': 16000,
         'chunk_size': 1024,
         'vad_threshold': 0.01,
