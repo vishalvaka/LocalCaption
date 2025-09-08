@@ -199,10 +199,15 @@ class MainWindow(QtWidgets.QWidget):
     def _on_start(self) -> None:
         # Apply latest config (force device switch by restarting capture)
         cfg = load_config()
-        desired = None if cfg.selected_device_index in (None, -1) else cfg.selected_device_index
+        # Map simple audio_source to capture device: internal -> default WASAPI output loopback, microphone -> default input
         if self._capture.is_active():
             self._capture.stop()
-        self._capture.set_preferred_device_index(desired)
+        # For simplified sources we don't choose explicit index; capture handles default routing
+        self._capture.set_preferred_device_index(None)
+        try:
+            self._capture.set_source_mode(cfg.audio_source or "internal")
+        except Exception:
+            pass
         self._ensure_asr()
         if self._asr is None:
             return

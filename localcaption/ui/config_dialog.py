@@ -21,16 +21,10 @@ class ConfigDialog(QtWidgets.QDialog):
         for mid, info in MODEL_REGISTRY.items():
             self._model_combo.addItem(info.name, mid)
 
-        self._device_combo = QtWidgets.QComboBox()
-        self._device_combo.addItem("Default output (WASAPI)", -1)
-        cap = AudioCapture()
-        try:
-            devices = cap.list_devices()
-            for idx, d in enumerate(devices):
-                name = d.get('name', f'Device {idx}')
-                self._device_combo.addItem(name, idx)
-        except Exception:
-            pass
+        # Simplified audio source
+        self._audio_source = QtWidgets.QComboBox()
+        self._audio_source.addItem("Internal audio (system output)", "internal")
+        self._audio_source.addItem("Microphone (default input)", "microphone")
 
         # STT backend controls
         self._stt_backend = QtWidgets.QComboBox()
@@ -63,7 +57,7 @@ class ConfigDialog(QtWidgets.QDialog):
 
         form = QtWidgets.QFormLayout()
         form.addRow("Model", self._model_combo)
-        form.addRow("Input device", self._device_combo)
+        form.addRow("Audio source", self._audio_source)
         form.addRow("STT backend", self._stt_backend)
         form.addRow("Deepgram API key", self._deepgram_key)
         form.addRow("Deepgram model", self._deepgram_model)
@@ -86,10 +80,12 @@ class ConfigDialog(QtWidgets.QDialog):
             idx = self._model_combo.findData(cfg.selected_model_id)
             if idx >= 0:
                 self._model_combo.setCurrentIndex(idx)
-        if cfg.selected_device_index is not None:
-            idx = self._device_combo.findData(cfg.selected_device_index)
-            if idx >= 0:
-                self._device_combo.setCurrentIndex(idx)
+        try:
+            sidx = self._audio_source.findData(cfg.audio_source or "internal")
+            if sidx >= 0:
+                self._audio_source.setCurrentIndex(sidx)
+        except Exception:
+            pass
         try:
             bidx = self._stt_backend.findData(cfg.stt_backend or "local")
             if bidx >= 0:
@@ -120,7 +116,8 @@ class ConfigDialog(QtWidgets.QDialog):
         rate = self._tts_rate.value()
         return AppConfig(
             selected_model_id=self._model_combo.currentData(),
-            selected_device_index=self._device_combo.currentData(),
+            selected_device_index=None,  # deprecated with simplified source
+            audio_source=self._audio_source.currentData(),
             stt_backend=self._stt_backend.currentData(),
             deepgram_api_key=(self._deepgram_key.text().strip() or None),
             deepgram_model=(self._deepgram_model.currentData() or None),

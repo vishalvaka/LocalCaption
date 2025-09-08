@@ -32,6 +32,7 @@ class AppConfig:
     stt_backend: str = "local"  # "local" | "deepgram"
     deepgram_api_key: Optional[str] = None
     deepgram_model: Optional[str] = None  # e.g., "nova-2", defaults server-side
+    audio_source: str = "internal"  # "internal" | "microphone"
 
 
 def config_path() -> str:
