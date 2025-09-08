@@ -38,6 +38,14 @@ class AudioCapture:
     def set_device(self, device_index: Optional[int]) -> None:
         self._device_index = device_index
 
+    # Backward-compat alias for UI wiring
+    def set_preferred_device_index(self, device_index: Optional[int]) -> None:
+        self.set_device(device_index)
+
+    def is_active(self) -> bool:
+        """Return True if a stream is currently open and running."""
+        return self._stream is not None and self._running.is_set()
+
     def set_consumer(self, consumer: Callable[[np.ndarray, int, float], None]) -> None:
         self._consumer = consumer
 
@@ -77,38 +85,71 @@ class AudioCapture:
         channels = 2
         blocksize = None
 
+        # Determine if selected device is an OUTPUT (loopback) or INPUT (microphone)
+        is_output = False
+        dinfo = None
         try:
             hostapis = sd.query_hostapis()
             wasapi_index = next((i for i, ha in enumerate(hostapis) if 'wasapi' in ha['name'].lower()), None)
-            if wasapi_index is not None:
-                extra = sd.WasapiSettings(loopback=True)
-                if device is None:
+
+            def is_wasapi_dev(d: dict) -> bool:
+                try:
+                    return 'wasapi' in hostapis[int(d.get('hostapi', -1))]['name'].lower()
+                except Exception:
+                    return False
+
+            # If no explicit device, prefer default WASAPI output for loopback
+            if device is None and wasapi_index is not None:
+                device = hostapis[wasapi_index]['default_output']
+                is_output = True
+
+            if device is not None and device >= 0:
+                dinfo = sd.query_devices(device)
+                out_ch = int(dinfo.get('max_output_channels') or 0)
+                in_ch = int(dinfo.get('max_input_channels') or 0)
+                is_output = out_ch > 0 and (in_ch == 0 or out_ch >= in_ch)
+
+                # For output devices that are not WASAPI, switch to default WASAPI output
+                if is_output and wasapi_index is not None and not is_wasapi_dev(dinfo):
                     device = hostapis[wasapi_index]['default_output']
-                if device is not None and device >= 0:
                     dinfo = sd.query_devices(device)
-                    samplerate = int(dinfo.get('default_samplerate') or 48000)
                     out_ch = int(dinfo.get('max_output_channels') or 2)
-                    channels = max(1, min(2, out_ch))
-                    blocksize = max(1, int(samplerate * self.block_duration_ms / 1000))
+
+                samplerate = int((dinfo.get('default_samplerate') or 48000))
+                channels = max(1, min(2, out_ch if is_output else (in_ch or 2)))
+                blocksize = max(1, int((samplerate or 48000) * self.block_duration_ms / 1000))
+
+            # Use WASAPI loopback for speakers/output devices
+            if is_output and wasapi_index is not None:
+                extra = sd.WasapiSettings(loopback=True)
         except Exception:
             extra = None
 
-        try:
-            self._stream = sd.InputStream(
-                device=device,
-                channels=channels,
-                dtype='float32',
-                samplerate=samplerate,
-                callback=self._on_audio,
-                blocksize=blocksize or 0,
-                latency='low',
-                extra_settings=extra,
-            )
-        except Exception:
+        # Try a couple of safe channel counts to avoid PaErrorCode -9998
+        tried = []
+        for ch in (channels, 2, 1):
+            if ch in tried:
+                continue
+            tried.append(ch)
+            try:
+                self._stream = sd.InputStream(
+                    device=device,
+                    channels=ch,
+                    dtype='float32',
+                    samplerate=samplerate,
+                    callback=self._on_audio,
+                    blocksize=blocksize or 0,
+                    latency='low',
+                    extra_settings=extra,
+                )
+                break
+            except Exception:
+                self._stream = None
+                continue
+        if self._stream is None:
             # Fallback: let backend choose everything (e.g., macOS/other APIs)
             self._stream = sd.InputStream(
                 device=device,
-                channels=max(1, self.channels),
                 dtype='float32',
                 callback=self._on_audio,
                 blocksize=0,

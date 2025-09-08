@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt5 import QtCore, QtWidgets  # type: ignore
+from PyQt6 import QtCore, QtWidgets  # type: ignore
 
 from ..audio.capture import AudioCapture
 from ..utils.config import AppConfig, load_config, save_config
@@ -36,7 +36,7 @@ class ConfigDialog(QtWidgets.QDialog):
         form.addRow("Input device", self._device_combo)
         layout.addLayout(form)
 
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Save | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -63,7 +63,7 @@ class ConfigDialog(QtWidgets.QDialog):
     @staticmethod
     def run_modal(parent=None) -> Optional[AppConfig]:
         dlg = ConfigDialog(parent)
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             cfg = dlg.get_config()
             save_config(cfg)
             return cfg
