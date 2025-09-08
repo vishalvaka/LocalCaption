@@ -3,3 +3,7 @@
 dist/
 .venv/
 models/
+build/
+LocalCaption-Release/
+*.bat
+*.zip

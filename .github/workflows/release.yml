@@ -1,0 +1,180 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Download ASR models
+      run: |
+        python setup_models.py
+    
+    - name: Build executable
+      run: |
+        pyinstaller build.spec --clean --noconfirm
+    
+    - name: Create portable package
+      run: |
+        mkdir LocalCaption-Release
+        copy dist\LocalCaption.exe LocalCaption-Release\
+        xcopy models LocalCaption-Release\models\ /E /I
+        copy README.md LocalCaption-Release\
+        copy requirements.txt LocalCaption-Release\
+        copy LICENSE LocalCaption-Release\
+        
+        echo @echo off > LocalCaption-Release\run_localcaption.bat
+        echo echo Starting LocalCaption... >> LocalCaption-Release\run_localcaption.bat
+        echo LocalCaption.exe >> LocalCaption-Release\run_localcaption.bat
+        echo pause >> LocalCaption-Release\run_localcaption.bat
+    
+    - name: Create ZIP package
+      run: |
+        powershell Compress-Archive -Path LocalCaption-Release\* -DestinationPath LocalCaption-Windows.zip
+    
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: LocalCaption-Windows
+        path: LocalCaption-Windows.zip
+
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Download ASR models
+      run: |
+        python setup_models.py
+    
+    - name: Build executable
+      run: |
+        pyinstaller build.spec --clean --noconfirm
+    
+    - name: Create portable package
+      run: |
+        mkdir LocalCaption-Release
+        cp dist/LocalCaption LocalCaption-Release/
+        cp -r models LocalCaption-Release/
+        cp README.md LocalCaption-Release/
+        cp requirements.txt LocalCaption-Release/
+        cp LICENSE LocalCaption-Release/
+        
+        echo '#!/bin/bash' > LocalCaption-Release/run_localcaption.sh
+        echo 'echo "Starting LocalCaption..."' >> LocalCaption-Release/run_localcaption.sh
+        echo './LocalCaption' >> LocalCaption-Release/run_localcaption.sh
+        chmod +x LocalCaption-Release/run_localcaption.sh
+    
+    - name: Create ZIP package
+      run: |
+        zip -r LocalCaption-macOS.zip LocalCaption-Release/
+    
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: LocalCaption-macOS
+        path: LocalCaption-macOS.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y portaudio19-dev
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Download ASR models
+      run: |
+        python setup_models.py
+    
+    - name: Build executable
+      run: |
+        pyinstaller build.spec --clean --noconfirm
+    
+    - name: Create portable package
+      run: |
+        mkdir LocalCaption-Release
+        cp dist/LocalCaption LocalCaption-Release/
+        cp -r models LocalCaption-Release/
+        cp README.md LocalCaption-Release/
+        cp requirements.txt LocalCaption-Release/
+        cp LICENSE LocalCaption-Release/
+        
+        echo '#!/bin/bash' > LocalCaption-Release/run_localcaption.sh
+        echo 'echo "Starting LocalCaption..."' >> LocalCaption-Release/run_localcaption.sh
+        echo './LocalCaption' >> LocalCaption-Release/run_localcaption.sh
+        chmod +x LocalCaption-Release/run_localcaption.sh
+    
+    - name: Create ZIP package
+      run: |
+        zip -r LocalCaption-Linux.zip LocalCaption-Release/
+    
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: LocalCaption-Linux
+        path: LocalCaption-Linux.zip
+
+  create-release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          LocalCaption-Windows/LocalCaption-Windows.zip
+          LocalCaption-macOS/LocalCaption-macOS.zip
+          LocalCaption-Linux/LocalCaption-Linux.zip
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
