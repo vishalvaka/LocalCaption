@@ -1,5 +1,5 @@
 import sys
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 from .ui.main_window import MainWindow
 
@@ -9,4 +9,4 @@ def main() -> None:
     app.setApplicationName("LocalCaption")
     window = MainWindow()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

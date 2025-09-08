@@ -8,7 +8,7 @@ from typing import Optional, Any, cast
 
 import numpy as np
 import psutil
-from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore
+from PyQt6 import QtCore, QtGui, QtWidgets  # type: ignore
 
 from ..audio.capture import AudioCapture
 from ..asr.engine import StreamingASREngine, RecognitionResult
@@ -19,14 +19,13 @@ class MainWindow(QtWidgets.QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        QT: Any = cast(Any, QtCore.Qt)
         self.setWindowTitle("LocalCaption")
         self.setWindowFlags(
-            QT.WindowStaysOnTopHint
-            | QT.FramelessWindowHint
-            | QT.Tool
+            QtCore.Qt.WindowType.WindowStaysOnTopHint
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.Tool
         )
-        self.setAttribute(QT.WA_TranslucentBackground)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self._caption_label = QtWidgets.QLabel("")
         self._caption_label.setWordWrap(True)
@@ -80,7 +79,8 @@ class MainWindow(QtWidgets.QWidget):
         # Signals
         self.caption_updated.connect(self._caption_label.setText)
 
-        self._QT = QT
+        # Cache Qt namespace for readability
+        self._QT = QtCore.Qt
 
     @QtCore.pyqtSlot()
     def _on_close_clicked(self) -> None:  # type: ignore[no-untyped-def]
@@ -161,14 +161,14 @@ class MainWindow(QtWidgets.QWidget):
 
     # Drag to move
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # type: ignore[override]
-        if event.button() == self._QT.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
             event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # type: ignore[override]
-        if (event.buttons() & self._QT.LeftButton) and self._drag_offset is not None:
+        if (event.buttons() & QtCore.Qt.MouseButton.LeftButton) and self._drag_offset is not None:
             self.move(event.globalPos() - self._drag_offset)
             event.accept()
         else:
