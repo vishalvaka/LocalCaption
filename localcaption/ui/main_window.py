@@ -14,6 +14,7 @@ from ..audio.capture import AudioCapture
 from ..asr.engine import StreamingASREngine, RecognitionResult
 from ..utils.config import load_config
 from ..utils.models import ensure_model_downloaded
+from ..tts.engine import LocalTTSEngine
 
 
 class MainWindow(QtWidgets.QWidget):
@@ -40,6 +41,7 @@ class MainWindow(QtWidgets.QWidget):
         self._stop_btn = QtWidgets.QPushButton("Stop")
         self._config_btn = QtWidgets.QPushButton("Configure…")
         self._save_btn = QtWidgets.QPushButton("Save")
+        self._speak_btn = QtWidgets.QPushButton("Speak")
         self._close_btn = QtWidgets.QPushButton("×")
         self._close_btn.setFixedWidth(28)
         self._close_btn.setToolTip("Close")
@@ -51,6 +53,7 @@ class MainWindow(QtWidgets.QWidget):
         buttons.addWidget(self._start_btn)
         buttons.addWidget(self._stop_btn)
         buttons.addWidget(self._save_btn)
+        buttons.addWidget(self._speak_btn)
         buttons.addWidget(self._config_btn)
         buttons.addStretch(1)
         buttons.addWidget(self._metrics_label)
@@ -72,6 +75,9 @@ class MainWindow(QtWidgets.QWidget):
         self._current_partial: str = ""
         self._last_latency_ms: float = 0.0
         self._config_dirty: bool = False
+        self._is_tts_speaking: bool = False
+        self._tts: Optional[LocalTTSEngine] = None
+        self._manual_tts_active: bool = False
         self._metrics_timer = QtCore.QTimer(self)
         self._metrics_timer.timeout.connect(self._update_metrics)
         self._metrics_timer.start(500)
@@ -81,6 +87,7 @@ class MainWindow(QtWidgets.QWidget):
         self._start_btn.clicked.connect(self._on_start)
         self._stop_btn.clicked.connect(self._on_stop)
         self._save_btn.clicked.connect(self._on_save)
+        self._speak_btn.clicked.connect(self._on_speak)
         self._close_btn.clicked.connect(self._on_close_clicked)
         self._config_btn.clicked.connect(self._on_configure)
 
@@ -90,6 +97,10 @@ class MainWindow(QtWidgets.QWidget):
         # Cache Qt namespace for readability
         self._QT = QtCore.Qt
         self._update_save_enabled()
+        try:
+            self._caption_view.installEventFilter(self)
+        except Exception:
+            pass
 
     @QtCore.pyqtSlot()
     def _on_close_clicked(self) -> None:  # type: ignore[no-untyped-def]
@@ -159,6 +170,8 @@ class MainWindow(QtWidgets.QWidget):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Model missing", f"{e}\nRun: python setup_models.py")
 
+        # Do not initialize TTS here; TTS is only used via Speak button when capture is stopped
+
     def _on_start(self) -> None:
         # Apply latest config (force device switch by restarting capture)
         cfg = load_config()
@@ -171,6 +184,10 @@ class MainWindow(QtWidgets.QWidget):
             return
         self._transcript_lines.clear()
         self._update_save_enabled()
+        try:
+            self._speak_btn.setEnabled(False)
+        except Exception:
+            pass
         self._capture.start()
 
     def _on_stop(self) -> None:
@@ -181,6 +198,57 @@ class MainWindow(QtWidgets.QWidget):
             self._current_partial = ""
         self._render_captions()
         self._update_save_enabled()
+        try:
+            # Enable Speak only if transcript exists
+            self._speak_btn.setEnabled(len(self._transcript_lines) > 0 or bool(self._current_partial.strip()))
+        except Exception:
+            pass
+        try:
+            if self._tts is not None:
+                self._tts.stop()
+                self._tts = None
+        except Exception:
+            pass
+
+    def _on_speak(self) -> None:
+        # Only allow when capture is stopped
+        if self._capture.is_active():
+            QtWidgets.QMessageBox.information(self, "Busy", "Stop captioning before using Speak.")
+            return
+        # Build full transcript including current partial
+        lines = list(self._transcript_lines)
+        if self._current_partial.strip():
+            lines.append(self._current_partial.strip())
+        full_text = "\n".join([ln for ln in lines if ln.strip()])
+        if not full_text:
+            QtWidgets.QMessageBox.information(self, "Nothing to speak", "There is no transcript yet.")
+            return
+        # Ensure TTS is available
+        try:
+            # Always rebuild TTS from current config so changes (e.g., WPM) apply
+            try:
+                if self._tts is not None:
+                    self._tts.stop()
+            except Exception:
+                pass
+            self._tts = None
+            cfg = load_config()
+            self._tts = LocalTTSEngine(
+                voice_id=cfg.tts_voice_id,
+                rate_wpm=cfg.tts_rate_wpm,
+                on_speaking=self._on_tts_speaking,
+            )
+            self._tts.start()
+            # Mark manual playback active to avoid partial interruptions
+            self._manual_tts_active = True
+            self._tts.speak(full_text, flush=True)
+            # After speaking queued, keep Speak disabled until completion
+            try:
+                self._speak_btn.setEnabled(False)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _on_save(self) -> None:
         if not self._transcript_lines:
@@ -213,6 +281,7 @@ class MainWindow(QtWidgets.QWidget):
             return
         if sample_rate is None or sample_rate <= 0:
             return
+        # No TTS during live captioning; ignore any TTS state
         try:
             res: Optional[RecognitionResult] = self._asr.accept_pcm(pcm.astype(np.float32), sample_rate, timestamp)
         except Exception:
@@ -228,6 +297,7 @@ class MainWindow(QtWidgets.QWidget):
             self._render_captions()
         else:
             self._set_caption(res.text)
+            # No speaking of partials during live captioning
 
     @QtCore.pyqtSlot()
     def _update_metrics(self) -> None:
@@ -261,6 +331,38 @@ class MainWindow(QtWidgets.QWidget):
             self._save_btn.setEnabled(len(self._transcript_lines) > 0)
         except Exception:
             pass
+
+    # TTS speaking state callback
+    def _on_tts_speaking(self, speaking: bool) -> None:
+        self._is_tts_speaking = bool(speaking)
+        if not speaking:
+            self._manual_tts_active = False
+            # Re-enable Speak when finished and capture is stopped
+            try:
+                if not self._capture.is_active():
+                    self._speak_btn.setEnabled(True)
+            except Exception:
+                pass
+
+    # Event filter to allow dragging from child widgets
+    def eventFilter(self, obj: Any, event: QtCore.QEvent) -> bool:  # type: ignore[override]
+        try:
+            if event.type() == QtCore.QEvent.Type.MouseButtonPress and isinstance(event, QtGui.QMouseEvent):
+                if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                    global_pos = event.globalPosition().toPoint()
+                    self._drag_offset = global_pos - self.frameGeometry().topLeft()
+                    return True
+            if event.type() == QtCore.QEvent.Type.MouseMove and isinstance(event, QtGui.QMouseEvent):
+                if (event.buttons() & QtCore.Qt.MouseButton.LeftButton) and self._drag_offset is not None:
+                    global_pos = event.globalPosition().toPoint()
+                    self.move(global_pos - self._drag_offset)
+                    return True
+            if event.type() == QtCore.QEvent.Type.MouseButtonRelease and isinstance(event, QtGui.QMouseEvent):
+                self._drag_offset = None
+                return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
 
     # Drag to move
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # type: ignore[override]

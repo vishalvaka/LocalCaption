@@ -25,6 +25,10 @@ def user_models_dir() -> str:
 class AppConfig:
     selected_model_id: Optional[str] = None
     selected_device_index: Optional[int] = None
+    tts_enabled: bool = False
+    tts_speak_partials: bool = False
+    tts_rate_wpm: Optional[int] = None
+    tts_voice_id: Optional[str] = None
 
 
 def config_path() -> str:

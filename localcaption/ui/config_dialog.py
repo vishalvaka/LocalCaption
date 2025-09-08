@@ -7,6 +7,7 @@ from PyQt6 import QtCore, QtWidgets  # type: ignore
 from ..audio.capture import AudioCapture
 from ..utils.config import AppConfig, load_config, save_config
 from ..utils.models import MODEL_REGISTRY
+from ..tts.engine import LocalTTSEngine
 
 
 class ConfigDialog(QtWidgets.QDialog):
@@ -31,9 +32,29 @@ class ConfigDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
+        # TTS controls
+        self._tts_enable = QtWidgets.QCheckBox("Enable TTS (pyttsx3)")
+        self._tts_partials = QtWidgets.QCheckBox("Speak partial captions")
+        self._tts_rate = QtWidgets.QSpinBox()
+        self._tts_rate.setRange(80, 300)
+        self._tts_rate.setSingleStep(10)
+        self._tts_rate.setSpecialValueText("Default")
+        self._tts_rate.setValue(0)
+        self._tts_voice = QtWidgets.QComboBox()
+        try:
+            tts = LocalTTSEngine()
+            for v in tts.list_voices():
+                self._tts_voice.addItem(v.get("name") or v.get("id") or "voice", v.get("id"))
+        except Exception:
+            pass
+
         form = QtWidgets.QFormLayout()
         form.addRow("Model", self._model_combo)
         form.addRow("Input device", self._device_combo)
+        form.addRow(self._tts_enable)
+        form.addRow(self._tts_partials)
+        form.addRow("TTS rate (WPM)", self._tts_rate)
+        form.addRow("TTS voice", self._tts_voice)
         layout.addLayout(form)
 
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Save | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
@@ -53,11 +74,26 @@ class ConfigDialog(QtWidgets.QDialog):
             idx = self._device_combo.findData(cfg.selected_device_index)
             if idx >= 0:
                 self._device_combo.setCurrentIndex(idx)
+        try:
+            self._tts_enable.setChecked(bool(cfg.tts_enabled))
+            self._tts_partials.setChecked(bool(cfg.tts_speak_partials))
+            self._tts_rate.setValue(int(cfg.tts_rate_wpm) if cfg.tts_rate_wpm else 0)
+            if cfg.tts_voice_id is not None:
+                vidx = self._tts_voice.findData(cfg.tts_voice_id)
+                if vidx >= 0:
+                    self._tts_voice.setCurrentIndex(vidx)
+        except Exception:
+            pass
 
     def get_config(self) -> AppConfig:
+        rate = self._tts_rate.value()
         return AppConfig(
             selected_model_id=self._model_combo.currentData(),
             selected_device_index=self._device_combo.currentData(),
+            tts_enabled=self._tts_enable.isChecked(),
+            tts_speak_partials=self._tts_partials.isChecked(),
+            tts_rate_wpm=(rate if rate > 0 else None),
+            tts_voice_id=self._tts_voice.currentData(),
         )
 
     @staticmethod
