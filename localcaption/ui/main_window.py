@@ -12,6 +12,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets  # type: ignore
 
 from ..audio.capture import AudioCapture
 from ..asr.engine import StreamingASREngine, RecognitionResult
+from ..asr.engine import DeepgramStreamingASR
 from ..utils.config import load_config
 from ..utils.models import ensure_model_downloaded
 from ..tts.engine import LocalTTSEngine
@@ -19,6 +20,7 @@ from ..tts.engine import LocalTTSEngine
 
 class MainWindow(QtWidgets.QWidget):
     caption_updated = QtCore.pyqtSignal(str)  # type: ignore
+    tts_speaking_changed = QtCore.pyqtSignal(bool)  # type: ignore
 
     def __init__(self) -> None:
         super().__init__()
@@ -42,6 +44,8 @@ class MainWindow(QtWidgets.QWidget):
         self._config_btn = QtWidgets.QPushButton("Configure…")
         self._save_btn = QtWidgets.QPushButton("Save")
         self._speak_btn = QtWidgets.QPushButton("Speak")
+        self._stop_speak_btn = QtWidgets.QPushButton("Stop")
+        self._restart_speak_btn = QtWidgets.QPushButton("Restart")
         self._close_btn = QtWidgets.QPushButton("×")
         self._close_btn.setFixedWidth(28)
         self._close_btn.setToolTip("Close")
@@ -54,6 +58,8 @@ class MainWindow(QtWidgets.QWidget):
         buttons.addWidget(self._stop_btn)
         buttons.addWidget(self._save_btn)
         buttons.addWidget(self._speak_btn)
+        buttons.addWidget(self._stop_speak_btn)
+        buttons.addWidget(self._restart_speak_btn)
         buttons.addWidget(self._config_btn)
         buttons.addStretch(1)
         buttons.addWidget(self._metrics_label)
@@ -70,7 +76,7 @@ class MainWindow(QtWidgets.QWidget):
         # State
         self._capture = AudioCapture()
         self._capture.set_consumer(self._on_pcm)
-        self._asr: Optional[StreamingASREngine] = None
+        self._asr: Optional[Any] = None
         self._transcript_lines: list[str] = []
         self._current_partial: str = ""
         self._last_latency_ms: float = 0.0
@@ -88,15 +94,24 @@ class MainWindow(QtWidgets.QWidget):
         self._stop_btn.clicked.connect(self._on_stop)
         self._save_btn.clicked.connect(self._on_save)
         self._speak_btn.clicked.connect(self._on_speak)
+        self._stop_speak_btn.clicked.connect(self._on_stop_speaking)
+        self._restart_speak_btn.clicked.connect(self._on_restart_speaking)
         self._close_btn.clicked.connect(self._on_close_clicked)
         self._config_btn.clicked.connect(self._on_configure)
 
         # Signals
         self.caption_updated.connect(self._on_caption_updated)
+        self.tts_speaking_changed.connect(self._on_tts_speaking_ui)
 
         # Cache Qt namespace for readability
         self._QT = QtCore.Qt
         self._update_save_enabled()
+        try:
+            self._speak_btn.setEnabled(False)
+            self._stop_speak_btn.setEnabled(False)
+            self._restart_speak_btn.setEnabled(False)
+        except Exception:
+            pass
         try:
             self._caption_view.installEventFilter(self)
         except Exception:
@@ -125,6 +140,11 @@ class MainWindow(QtWidgets.QWidget):
             ensure_model_downloaded(cfg.selected_model_id)
         # Mark that configuration changed so Start will re-init ASR
         self._config_dirty = True
+        # Update Speak button state based on new config
+        try:
+            self._update_speak_enabled()
+        except Exception:
+            pass
 
     # Ensure full shutdown when the window is closed
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
@@ -165,10 +185,14 @@ class MainWindow(QtWidgets.QWidget):
         if not model_dir:
             model_dir = os.path.join(self._models_root(), "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17")
         try:
-            self._asr = StreamingASREngine(model_dir=model_dir)
+            # Choose backend
+            if cfg.stt_backend == "deepgram" and cfg.deepgram_api_key:
+                self._asr = DeepgramStreamingASR(api_key=cfg.deepgram_api_key, model=cfg.deepgram_model)
+            else:
+                self._asr = StreamingASREngine(model_dir=model_dir)
             self._config_dirty = False
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Model missing", f"{e}\nRun: python setup_models.py")
+            QtWidgets.QMessageBox.critical(self, "ASR init error", f"{e}")
 
         # Do not initialize TTS here; TTS is only used via Speak button when capture is stopped
 
@@ -185,6 +209,7 @@ class MainWindow(QtWidgets.QWidget):
         self._transcript_lines.clear()
         self._update_save_enabled()
         try:
+            # Disable Speak during capture, or when TTS is disabled
             self._speak_btn.setEnabled(False)
         except Exception:
             pass
@@ -199,8 +224,7 @@ class MainWindow(QtWidgets.QWidget):
         self._render_captions()
         self._update_save_enabled()
         try:
-            # Enable Speak only if transcript exists
-            self._speak_btn.setEnabled(len(self._transcript_lines) > 0 or bool(self._current_partial.strip()))
+            self._update_speak_enabled()
         except Exception:
             pass
         try:
@@ -209,11 +233,32 @@ class MainWindow(QtWidgets.QWidget):
                 self._tts = None
         except Exception:
             pass
+        # Reset ASR if Deepgram to allow fresh connection on next Start
+        try:
+            from ..asr.engine import DeepgramStreamingASR as _DG
+            if isinstance(self._asr, _DG):
+                try:
+                    self._asr.close()
+                except Exception:
+                    pass
+                self._asr = None
+        except Exception:
+            pass
+        try:
+            self._stop_speak_btn.setEnabled(False)
+            self._restart_speak_btn.setEnabled(self._can_speak())
+        except Exception:
+            pass
 
     def _on_speak(self) -> None:
         # Only allow when capture is stopped
         if self._capture.is_active():
             QtWidgets.QMessageBox.information(self, "Busy", "Stop captioning before using Speak.")
+            return
+        # Respect TTS enabled flag
+        cfg = load_config()
+        if not cfg.tts_enabled:
+            QtWidgets.QMessageBox.information(self, "TTS disabled", "Enable TTS in Configure to use Speak.")
             return
         # Build full transcript including current partial
         lines = list(self._transcript_lines)
@@ -223,28 +268,59 @@ class MainWindow(QtWidgets.QWidget):
         if not full_text:
             QtWidgets.QMessageBox.information(self, "Nothing to speak", "There is no transcript yet.")
             return
-        # Ensure TTS is available
+        # Ensure TTS is available and start
+        self._speak_full_text(full_text, cfg)
+
+    def _on_stop_speaking(self) -> None:
         try:
-            # Always rebuild TTS from current config so changes (e.g., WPM) apply
+            if self._tts is not None:
+                self._tts.stop()
+                self._tts = None
+        except Exception:
+            pass
+        self._is_tts_speaking = False
+        self._manual_tts_active = False
+        try:
+            self._speak_btn.setEnabled(self._can_speak())
+            self._stop_speak_btn.setEnabled(False)
+            self._restart_speak_btn.setEnabled(self._can_speak())
+        except Exception:
+            pass
+
+    def _on_restart_speaking(self) -> None:
+        if self._capture.is_active():
+            return
+        cfg = load_config()
+        if not cfg.tts_enabled:
+            return
+        full_text = "\n".join([ln for ln in self._transcript_lines if ln.strip()])
+        if self._current_partial.strip():
+            full_text += ("\n" if full_text else "") + self._current_partial.strip()
+        if not full_text:
+            return
+        self._on_stop_speaking()
+        self._speak_full_text(full_text, cfg)
+
+    def _speak_full_text(self, full_text: str, cfg) -> None:
+        try:
             try:
                 if self._tts is not None:
                     self._tts.stop()
             except Exception:
                 pass
             self._tts = None
-            cfg = load_config()
             self._tts = LocalTTSEngine(
                 voice_id=cfg.tts_voice_id,
                 rate_wpm=cfg.tts_rate_wpm,
                 on_speaking=self._on_tts_speaking,
             )
             self._tts.start()
-            # Mark manual playback active to avoid partial interruptions
             self._manual_tts_active = True
             self._tts.speak(full_text, flush=True)
-            # After speaking queued, keep Speak disabled until completion
             try:
                 self._speak_btn.setEnabled(False)
+                self._stop_speak_btn.setEnabled(True)
+                self._restart_speak_btn.setEnabled(True)
             except Exception:
                 pass
         except Exception:
@@ -292,9 +368,8 @@ class MainWindow(QtWidgets.QWidget):
         if res.is_final:
             if res.text:
                 self._transcript_lines.append(res.text)
-                self._update_save_enabled()
-            self._current_partial = ""
-            self._render_captions()
+            # request UI thread to clear partial and render
+            self._set_caption("")
         else:
             self._set_caption(res.text)
             # No speaking of partials during live captioning
@@ -310,6 +385,7 @@ class MainWindow(QtWidgets.QWidget):
     def _on_caption_updated(self, text: str) -> None:
         self._current_partial = text
         self._render_captions()
+        self._update_save_enabled()
 
     def _render_captions(self) -> None:
         try:
@@ -332,15 +408,44 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-    # TTS speaking state callback
+    def _can_speak(self) -> bool:
+        try:
+            if self._capture.is_active():
+                return False
+            cfg = load_config()
+            if not bool(cfg.tts_enabled):
+                return False
+            return len(self._transcript_lines) > 0 or bool(self._current_partial.strip())
+        except Exception:
+            return False
+
+    def _update_speak_enabled(self) -> None:
+        try:
+            self._speak_btn.setEnabled(self._can_speak())
+        except Exception:
+            pass
+
+    # TTS speaking state callback (called from worker thread)
     def _on_tts_speaking(self, speaking: bool) -> None:
+        # Emit signal to be handled in UI thread
+        try:
+            self.tts_speaking_changed.emit(bool(speaking))
+        except Exception:
+            pass
+
+    # Runs in UI thread
+    def _on_tts_speaking_ui(self, speaking: bool) -> None:
         self._is_tts_speaking = bool(speaking)
         if not speaking:
             self._manual_tts_active = False
-            # Re-enable Speak when finished and capture is stopped
             try:
                 if not self._capture.is_active():
-                    self._speak_btn.setEnabled(True)
+                    self._speak_btn.setEnabled(self._can_speak())
+                    # If controls exist, update them; guard for attributes
+                    if hasattr(self, "_stop_speak_btn"):
+                        self._stop_speak_btn.setEnabled(False)
+                    if hasattr(self, "_restart_speak_btn"):
+                        self._restart_speak_btn.setEnabled(self._can_speak())
             except Exception:
                 pass
 

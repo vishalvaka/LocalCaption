@@ -6,3 +6,4 @@ sherpa-onnx>=1.9.13
 scipy>=1.11.0
 pyinstaller>=6.4
 pyttsx3>=2.90
+websocket-client>=1.8.0

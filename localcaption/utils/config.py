@@ -29,6 +29,9 @@ class AppConfig:
     tts_speak_partials: bool = False
     tts_rate_wpm: Optional[int] = None
     tts_voice_id: Optional[str] = None
+    stt_backend: str = "local"  # "local" | "deepgram"
+    deepgram_api_key: Optional[str] = None
+    deepgram_model: Optional[str] = None  # e.g., "nova-2", defaults server-side
 
 
 def config_path() -> str:

@@ -32,6 +32,19 @@ class ConfigDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
+        # STT backend controls
+        self._stt_backend = QtWidgets.QComboBox()
+        self._stt_backend.addItem("Local (sherpa-onnx)", "local")
+        self._stt_backend.addItem("Deepgram (cloud)", "deepgram")
+        self._deepgram_key = QtWidgets.QLineEdit()
+        self._deepgram_key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        self._deepgram_model = QtWidgets.QComboBox()
+        self._deepgram_model.addItem("Auto (server default)", "")
+        self._deepgram_model.addItem("nova-2-general", "nova-2-general")
+        self._deepgram_model.addItem("nova-2-meeting", "nova-2-meeting")
+        self._deepgram_model.addItem("nova-2-telephony", "nova-2-telephony")
+        self._deepgram_model.addItem("nova-2-conversationalai", "nova-2-conversationalai")
+
         # TTS controls
         self._tts_enable = QtWidgets.QCheckBox("Enable TTS (pyttsx3)")
         self._tts_partials = QtWidgets.QCheckBox("Speak partial captions")
@@ -51,6 +64,9 @@ class ConfigDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout()
         form.addRow("Model", self._model_combo)
         form.addRow("Input device", self._device_combo)
+        form.addRow("STT backend", self._stt_backend)
+        form.addRow("Deepgram API key", self._deepgram_key)
+        form.addRow("Deepgram model", self._deepgram_model)
         form.addRow(self._tts_enable)
         form.addRow(self._tts_partials)
         form.addRow("TTS rate (WPM)", self._tts_rate)
@@ -75,6 +91,21 @@ class ConfigDialog(QtWidgets.QDialog):
             if idx >= 0:
                 self._device_combo.setCurrentIndex(idx)
         try:
+            bidx = self._stt_backend.findData(cfg.stt_backend or "local")
+            if bidx >= 0:
+                self._stt_backend.setCurrentIndex(bidx)
+            if cfg.deepgram_api_key:
+                self._deepgram_key.setText(cfg.deepgram_api_key)
+            if cfg.deepgram_model is not None:
+                midx = self._deepgram_model.findData(cfg.deepgram_model)
+                if midx >= 0:
+                    self._deepgram_model.setCurrentIndex(midx)
+                else:
+                    self._deepgram_model.addItem(cfg.deepgram_model, cfg.deepgram_model)
+                    self._deepgram_model.setCurrentIndex(self._deepgram_model.count() - 1)
+        except Exception:
+            pass
+        try:
             self._tts_enable.setChecked(bool(cfg.tts_enabled))
             self._tts_partials.setChecked(bool(cfg.tts_speak_partials))
             self._tts_rate.setValue(int(cfg.tts_rate_wpm) if cfg.tts_rate_wpm else 0)
@@ -90,6 +121,9 @@ class ConfigDialog(QtWidgets.QDialog):
         return AppConfig(
             selected_model_id=self._model_combo.currentData(),
             selected_device_index=self._device_combo.currentData(),
+            stt_backend=self._stt_backend.currentData(),
+            deepgram_api_key=(self._deepgram_key.text().strip() or None),
+            deepgram_model=(self._deepgram_model.currentData() or None),
             tts_enabled=self._tts_enable.isChecked(),
             tts_speak_partials=self._tts_partials.isChecked(),
             tts_rate_wpm=(rate if rate > 0 else None),
